@@ -1,0 +1,18 @@
+QUICK RUN
+
+PYTHON
+------
+python -m venv .venv
+# Activate venv then:
+pip install -r requirements.txt
+python -m trutooth.cli scan --timeout 8
+python -m trutooth.cli monitor --device AA:BB:CC:DD:EE:FF --log metrics.csv
+pip install fastapi uvicorn aiofiles
+uvicorn trutooth.api:app --reload
+
+JAVA
+----
+cd java
+mvn package
+# Run your compiled class with your IDE or:
+# (Add exec-maven-plugin if you want mvn exec:java)

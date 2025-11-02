@@ -1,4 +1,4 @@
-package TruTooth;
+package TrutoothSim;
 
 public class TruTooth {
 

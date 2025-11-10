@@ -45,7 +45,6 @@ metrics.csv
 *.csv
 
 # IDE and editor directories
-.vscode/
 .idea/
 *.swp
 *.swo

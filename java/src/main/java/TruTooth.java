@@ -1,6 +1,5 @@
 import okhttp3.*;
 import java.util.concurrent.TimeUnit;
-import okhttp3.ws.WebSocketCall; // placeholder if needed
 
 public class TruTooth {
     static final OkHttpClient http = new OkHttpClient.Builder()
@@ -26,9 +25,20 @@ public class TruTooth {
 
         Request wsReq = new Request.Builder().url("ws://127.0.0.1:8000/events").build();
         http.newWebSocket(wsReq, new WebSocketListener() {
-            @Override public void onOpen(WebSocket ws, Response resp) { System.out.println("WS OPEN"); }
-            @Override public void onMessage(WebSocket ws, String text) { System.out.println("EVT: " + text); }
-            @Override public void onFailure(WebSocket ws, Throwable t, Response r) { t.printStackTrace(); }
+            @Override
+            public void onOpen(WebSocket ws, Response resp) {
+                System.out.println("WS OPEN");
+            }
+
+            @Override
+            public void onMessage(WebSocket ws, String text) {
+                System.out.println("EVT: " + text);
+            }
+
+            @Override
+            public void onFailure(WebSocket ws, Throwable t, Response r) {
+                t.printStackTrace();
+            }
         });
 
         Thread.sleep(10000);

@@ -22,3 +22,35 @@
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
+
+# Maven build directory
+target/
+**/target/
+
+# Python cache and bytecode
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Python virtual environment
+.venv/
+venv/
+ENV/
+env/
+
+# Runtime data files
+metrics.csv
+*.csv
+
+# IDE and editor directories
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+Thumbs.db

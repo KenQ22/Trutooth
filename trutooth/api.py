@@ -47,10 +47,85 @@ async def health():
 
 @app.get("/scan")
 async def scan(timeout: float = 6.0):
-    devs = await discover(timeout)
-    def item(d):
-        return {"address": getattr(d, "address", None), "name": getattr(d, "name", None), "rssi": getattr(d, "rssi", None)}
-    return JSONResponse([item(d) for d in devs])
+    """Primary scan endpoint.
+
+    Prefer direct Bleak discovery (fast/reliable on Windows) and fall back to
+    the package scanner if Bleak is unavailable or errors.
+    """
+    # Try direct bleak path first
+    try:
+        from bleak import BleakScanner  # type: ignore
+        results = await BleakScanner.discover(timeout=timeout, return_adv=True)
+        devices = []
+        for dev, adv in results.values():
+            devices.append({
+                "address": getattr(dev, "address", None),
+                "name": getattr(dev, "name", None),
+                "rssi": getattr(adv, "rssi", getattr(dev, "rssi", None)),
+            })
+        return JSONResponse(devices)
+    except Exception:
+        # Fall back to the library scanner implementation
+        devs = await discover(timeout)
+        def item(d):
+            return {
+                "address": getattr(d, "address", None),
+                "name": getattr(d, "name", None),
+                "rssi": getattr(d, "rssi", None),
+            }
+        return JSONResponse([item(d) for d in devs])
+
+@app.get("/scan/debug")
+async def scan_debug(timeout: float = 6.0):
+    """Attempt a direct bleak scan bypassing import fallback.
+
+    Returns:
+        JSON with keys:
+        - mode: 'bleak' if BleakScanner used, 'fallback' otherwise
+        - count: number of devices
+        - devices: list of device dicts (address, name, rssi)
+        - error: optional error string if failure occurred
+    """
+    try:
+        from bleak import BleakScanner  # type: ignore
+        if BleakScanner is None:
+            raise RuntimeError("BleakScanner unavailable (None)")
+        # Use return_adv to capture RSSI reliably across platforms.
+        results = await BleakScanner.discover(timeout=timeout, return_adv=True)
+        devices = []
+        for dev, adv in results.values():
+            devices.append({
+                "address": getattr(dev, "address", None),
+                "name": getattr(dev, "name", None),
+                "rssi": getattr(adv, "rssi", getattr(dev, "rssi", None)),
+            })
+        return {
+            "mode": "bleak",
+            "count": len(devices),
+            "devices": devices,
+        }
+    except Exception as exc:
+        # Fallback path: attempt existing discover (may be stub)
+        try:
+            devs = await discover(timeout)
+            devices = [{
+                "address": getattr(d, "address", None),
+                "name": getattr(d, "name", None),
+                "rssi": getattr(d, "rssi", None),
+            } for d in devs]
+            return {
+                "mode": "fallback",
+                "count": len(devices),
+                "devices": devices,
+                "error": str(exc),
+            }
+        except Exception as inner:
+            return {
+                "mode": "error",
+                "count": 0,
+                "devices": [],
+                "error": f"{exc}; secondary discover failed: {inner}",
+            }
 
 @app.post("/monitor/start")
 async def start(

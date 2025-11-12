@@ -1,6 +1,12 @@
 # TruTooth
 
-TruTooth is a Bluetooth monitoring toolkit that exposes a FastAPI backend along with a desktop control center written in Java Swing. The API handles device scanning, reconnection logic, and metrics collection, while the GUI provides an operator-friendly way to observe nearby devices, configure monitor sessions, and stream live events.
+TruTooth is a comprehensive Bluetooth monitoring toolkit with multiple interface options:
+
+- **FastAPI REST API** - Programmatic access for automation and integration
+- **Flask Web UI** - Browser-based monitoring dashboard (NEW)
+- **Java Swing GUI** - Rich desktop control center
+
+The backend handles device scanning, reconnection logic, and metrics collection. Choose the interface that best fits your needs: browser-based monitoring, desktop GUI, or REST API integration.
 
 ## Prerequisites
 
@@ -10,13 +16,34 @@ TruTooth is a Bluetooth monitoring toolkit that exposes a FastAPI backend along 
 
 ## Quick Start
 
-**Automated Launch (Recommended for Windows):**
+### Option 1: Automated Launch with PowerShell (Windows)
 
 ```powershell
 .\start-trutooth.ps1
 ```
 
-This script checks for Python, Java, and Maven, then launches both the backend API and GUI in separate windows.
+Launches both the FastAPI backend and Java GUI in separate windows.
+
+### Option 2: Flask Web UI (NEW - Browser-Based)
+
+```powershell
+python launch_trutooth.py --mode web
+```
+
+Opens a browser-based monitoring dashboard at `http://127.0.0.1:5000`. No Java required!
+
+### Option 3: Unified Launcher (Most Flexible)
+
+```powershell
+# Launch only the web interface
+python launch_trutooth.py --mode web
+
+# Launch only the REST API
+python launch_trutooth.py --mode api
+
+# Launch both web and API simultaneously
+python launch_trutooth.py --mode both
+```
 
 ## Manual Setup
 
@@ -52,6 +79,31 @@ Backend simulations and utilities include a small pytest suite:
 
 ```bash
 pytest
-````
+```
 
 Run tests from the repository root after installing backend dependencies.
+
+## Interface Comparison
+
+| Feature | FastAPI REST API | Flask Web UI | Java GUI |
+|---------|-----------------|--------------|----------|
+| Access Method | HTTP/WebSocket | Browser | Desktop App |
+| Use Case | Automation/Integration | Quick Monitoring | Advanced Control |
+| Requirements | Python only | Python only | Python + Java + Maven |
+| Port | 8000 | 5000 | Uses API (8000) |
+| Storage | CSV Metrics | SQLite + CSV | CSV Metrics |
+
+## Flask Web UI Features
+
+The new browser-based interface includes:
+- **Real-time device listing** with connection status
+- **Connection history viewer** with timestamps  
+- **Modern responsive design** with gradient styling
+- **Automatic background scanning** using bleak
+- **SQLite database storage** for historical analysis
+
+Access at `http://127.0.0.1:5000` after launching with `python launch_trutooth.py --mode web`
+
+## Integration Notes
+
+See [INTEGRATION_SUMMARY.md](INTEGRATION_SUMMARY.md) for details about the recent fork integration that added the Flask Web UI and database support.

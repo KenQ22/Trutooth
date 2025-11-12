@@ -44,6 +44,14 @@ env/
 metrics.csv
 *.csv
 
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-shm
+*.db-wal
+
 # IDE and editor directories
 .idea/
 *.swp

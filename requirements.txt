@@ -4,3 +4,8 @@ fastapi>=0.115
 uvicorn[standard]>=0.30
 aiofiles>=24.1
 websockets>=12.0
+
+# Flask web UI dependencies (optional)
+flask>=3.0
+flask-sqlalchemy>=3.1
+sqlalchemy>=2.0

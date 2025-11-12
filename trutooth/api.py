@@ -191,6 +191,33 @@ async def stop():
         return {"status": "stopped"}
     return {"status": "idle"}
 
+
+@app.get("/monitor/status")
+async def monitor_status():
+    running = _rec_task is not None and not _rec_task.done()
+    payload = {"status": "running" if running else "idle"}
+    if running and _rec:
+        payload["device"] = getattr(_rec, "address", "") or ""
+        payload["log"] = _log_path or ""
+    return payload
+
+
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    """Redirect root requests to the interactive docs to avoid 404 noise."""
+    # FastAPI prefers returning RedirectResponse; import inline to avoid top-level dependency.
+    from fastapi.responses import RedirectResponse
+
+    return RedirectResponse(url="/docs", status_code=307)
+
+
+@app.post("/monitor/force-disconnect")
+async def monitor_force_disconnect():
+    if _rec_task is None or _rec_task.done() or _rec is None:
+        raise HTTPException(status_code=409, detail="monitor not running")
+    _rec.request_force_disconnect()
+    return {"status": "triggered"}
+
 @app.websocket("/events")
 async def events(ws: WebSocket):
     await ws.accept()

@@ -18,21 +18,46 @@
                 "8000"
             ],
             "jinja": true,
-            "justMyCode": false,
+            "justMyCode": false
+        },
+        {
+            "name": "Flask Web UI",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "trutooth.web_ui",
+            "jinja": true,
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "TruTooth (Both: API+Web)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/launch_trutooth.py",
+            "args": ["--mode", "both"],
+            "console": "integratedTerminal",
+            "justMyCode": false
         },
         {
             "name": "TruTooth Java",
             "type": "java",
             "request": "launch",
-            "mainClass": "TruTooth",
+            "mainClass": "com.trutooth.gui.TruToothGuiApp",
             "projectName": "trutooth-app"
         }
     ],
     "compounds": [
         {
-            "name": "Launch Full Application",
+            "name": "Launch Full Application (API + Java)",
             "configurations": [
                 "FastAPI Backend",
+                "TruTooth Java"
+            ]
+        },
+        {
+            "name": "Launch Full Application (Web + Java)",
+            "configurations": [
+                "Flask Web UI",
                 "TruTooth Java"
             ]
         }

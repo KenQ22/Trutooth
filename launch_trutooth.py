@@ -11,10 +11,32 @@ Usage:
     python launch_trutooth.py --mode both     # Both interfaces (API on 8000, Web on 5000)
 """
 import argparse
-import sys
 import subprocess
+import sys
 import time
-from pathlib import Path
+
+
+def _run_fastapi(*, reload: bool = False) -> int:
+    """Run the FastAPI server process and return its exit code."""
+    cmd = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "trutooth.api:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000",
+    ]
+    if reload:
+        cmd.append("--reload")
+    return subprocess.run(cmd, check=False).returncode
+
+
+def _run_flask() -> int:
+    """Run the Flask web UI process and return its exit code."""
+    cmd = [sys.executable, "-m", "trutooth.web_ui"]
+    return subprocess.run(cmd, check=False).returncode
 
 
 def check_dependencies():
@@ -40,21 +62,13 @@ def launch_fastapi():
     """Launch FastAPI server."""
     print("🚀 Starting FastAPI REST API on http://127.0.0.1:8000")
     print("📖 API docs available at http://127.0.0.1:8000/docs")
-    subprocess.run([
-        sys.executable, "-m", "uvicorn",
-        "trutooth.api:app",
-        "--host", "127.0.0.1",
-        "--port", "8000",
-        "--reload"
-    ])
+    _run_fastapi(reload=True)
 
 
 def launch_flask():
     """Launch Flask Web UI."""
     print("🌐 Starting Flask Web UI on http://127.0.0.1:5000")
-    subprocess.run([
-        sys.executable, "-m", "trutooth.web_ui"
-    ])
+    _run_flask()
 
 
 def launch_both():
@@ -65,24 +79,13 @@ def launch_both():
     print("\nPress Ctrl+C to stop both servers\n")
     
     import multiprocessing
-    
+
     # Start FastAPI in separate process
-    api_process = multiprocessing.Process(
-        target=lambda: subprocess.run([
-            sys.executable, "-m", "uvicorn",
-            "trutooth.api:app",
-            "--host", "127.0.0.1",
-            "--port", "8000"
-        ])
-    )
-    
+    api_process = multiprocessing.Process(target=_run_fastapi, kwargs={"reload": False})
+
     # Start Flask in separate process
-    web_process = multiprocessing.Process(
-        target=lambda: subprocess.run([
-            sys.executable, "-m", "trutooth.web_ui"
-        ])
-    )
-    
+    web_process = multiprocessing.Process(target=_run_flask)
+
     try:
         api_process.start()
         time.sleep(1)  # Give API time to start
@@ -98,6 +101,12 @@ def launch_both():
         api_process.join()
         web_process.join()
         print("✅ Servers stopped")
+    finally:
+        # Ensure child processes are stopped if parent exits unexpectedly.
+        for proc in (api_process, web_process):
+            if proc.is_alive():
+                proc.terminate()
+                proc.join()
 
 
 def main():

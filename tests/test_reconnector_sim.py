@@ -86,6 +86,36 @@ class ReconnectorSimulationTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(extra_payload.get("address"), "AA:BB:CC:DD:EE:FF")
             self.assertEqual(extra_payload.get("role"), "test")
 
+    async def test_reconnector_handles_force_disconnect(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp, "metrics.csv")
+            metrics = MetricsLogger(log_path)
+            factory = _FakeSessionFactory()
+
+            reconnector = Reconnector(
+                address="AA:BB:CC:DD:EE:FF",
+                log=metrics,
+                poll_interval=0.01,
+                base_backoff=0.01,
+                max_backoff=0.02,
+                session_factory=factory,
+            )
+
+            # Start the reconnector in a task
+            task = asyncio.create_task(reconnector.run(runtime=0.1))
+            await asyncio.sleep(0.02)  # Let it start
+
+            # Request force disconnect
+            reconnector.request_force_disconnect()
+            await asyncio.sleep(0.02)  # Give it time to react
+
+            # Stop the task
+            reconnector.request_stop()
+            await task
+
+            # Verify it ran without crashing
+            self.assertGreaterEqual(factory.calls, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

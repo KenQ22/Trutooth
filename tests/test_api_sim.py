@@ -35,6 +35,7 @@ class _FakeReconnector:
         self.address = address
         self.kwargs = kwargs
         self.stop_event = asyncio.Event()
+        self.force_disconnect_event = asyncio.Event()
         self.run_calls: List[Optional[float]] = []
         _FakeReconnector.instances.append(self)
 
@@ -48,6 +49,9 @@ class _FakeReconnector:
 
     def request_stop(self) -> None:
         self.stop_event.set()
+
+    def request_force_disconnect(self) -> None:
+        self.force_disconnect_event.set()
 
 
 class ApiSimulationTest(unittest.TestCase):
@@ -68,14 +72,16 @@ class ApiSimulationTest(unittest.TestCase):
         _FakeReconnector.instances.clear()
 
     def test_scan_endpoint_returns_minimal_device_payload(self) -> None:
-        async def fake_discover(timeout: float = 6.0):
+        async def fake_bleak_discover(timeout: float = 6.0, return_adv: bool = False):
             assert timeout == 0.25
-            return [
-                SimpleNamespace(address="AA:BB", name="Sensor", rssi=-55),
-                SimpleNamespace(address="CC:DD", name=None, rssi=None),
-            ]
+            dev1 = SimpleNamespace(address="AA:BB", name="Sensor", rssi=-55)
+            adv1 = SimpleNamespace(rssi=-55)
+            dev2 = SimpleNamespace(address="CC:DD", name=None, rssi=None)
+            adv2 = SimpleNamespace(rssi=None)
+            return {"AA:BB": (dev1, adv1), "CC:DD": (dev2, adv2)}
 
-        with patch("trutooth.api.discover", fake_discover):
+        with patch("bleak.BleakScanner") as mock_scanner:
+            mock_scanner.discover = fake_bleak_discover
             response = self.client.get("/scan", params={"timeout": 0.25})
 
         self.assertEqual(response.status_code, 200)
@@ -85,6 +91,7 @@ class ApiSimulationTest(unittest.TestCase):
         self.assertIn("rssi", payload[1])
 
     def test_monitor_start_and_stop_flow_uses_reconnector(self) -> None:
+        import time
         metadata = {"role": "demo"}
         with patch("trutooth.api.MetricsLogger", _FakeMetricsLogger), patch(
             "trutooth.api.Reconnector", _FakeReconnector
@@ -94,9 +101,10 @@ class ApiSimulationTest(unittest.TestCase):
                 params={
                     "device": "AA:BB:CC:DD:EE:FF",
                     "log": "test_metrics.csv",
-                    "poll_interval": 0.1,
-                    "base_backoff": 0.1,
-                    "max_backoff": 0.1,
+                    "connect_timeout": 10.0,
+                    "poll_interval": 0.5,
+                    "base_backoff": 0.5,
+                    "max_backoff": 1.0,
                     "runtime": 0.2,
                     "metadata": json.dumps(metadata),
                 },
@@ -111,8 +119,10 @@ class ApiSimulationTest(unittest.TestCase):
             reconstructor = _FakeReconnector.instances[-1]
             self.assertEqual(reconstructor.address, "AA:BB:CC:DD:EE:FF")
             self.assertEqual(reconstructor.kwargs["metadata"], metadata)
-            self.assertEqual(reconstructor.kwargs["poll_interval"], 0.1)
+            self.assertEqual(reconstructor.kwargs["poll_interval"], 0.5)
             self.assertIsInstance(reconstructor.kwargs["log"], _FakeMetricsLogger)
+            # Give the async task time to start
+            time.sleep(0.1)
             self.assertEqual(reconstructor.run_calls, [0.2])
 
             stop_response = self.client.post("/monitor/stop")
@@ -128,6 +138,40 @@ class ApiSimulationTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         detail = response.json()["detail"]
         self.assertIn("Invalid metadata JSON", detail)
+
+    def test_monitor_status_returns_idle_when_not_running(self) -> None:
+        response = self.client.get("/monitor/status")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "idle")
+
+    def test_monitor_status_endpoint_structure(self) -> None:
+        # Test the status endpoint returns correct structure
+        response = self.client.get("/monitor/status")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("status", payload)
+        self.assertEqual(payload["status"], "idle")
+
+    def test_health_endpoint_returns_ok(self) -> None:
+        response = self.client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "ok")
+        self.assertIn("time", payload)
+
+    def test_scan_debug_endpoint_provides_detailed_info(self) -> None:
+        async def fake_discover(timeout: float = 6.0):
+            return [SimpleNamespace(address="AA:BB", name="Test", rssi=-60)]
+
+        with patch("trutooth.api.discover", fake_discover):
+            response = self.client.get("/scan/debug", params={"timeout": 0.5})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("mode", payload)
+        self.assertIn("count", payload)
+        self.assertIn("devices", payload)
 
 
 if __name__ == "__main__":

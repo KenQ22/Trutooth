@@ -54,11 +54,15 @@ class Reconnector:
 
         self._stop_event: Optional[asyncio.Event] = None
         self._session: Optional[DeviceSession] = None
+        self._force_drop = asyncio.Event()
+        self._running = False
 
     async def run(self, runtime: Optional[float] = None) -> None:
         """Continuously attempt to maintain a session until stopped."""
         stop_event = asyncio.Event()
         self._stop_event = stop_event
+        self._force_drop.clear()
+        self._running = True
         deadline = monotonic() + runtime if runtime else None
         backoff = self.base_backoff
         attempt = 0
@@ -100,6 +104,12 @@ class Reconnector:
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:  # pragma: no cover - network/hardware dependent
+                        await self._log(
+                            "connect_attempt",
+                            status="error",
+                            message=str(exc),
+                            extra={"attempt": attempt, "backoff": backoff},
+                        )
                         await self._log("session_error", status="error", message=str(exc))
                         logger.warning("Reconnector session error for %s: %s", self.address, exc)
                     finally:
@@ -120,11 +130,19 @@ class Reconnector:
             raise
         finally:
             stop_event.set()
+            self._running = False
             await self._log("monitor_stop", status="ok")
 
     def request_stop(self) -> None:
         if self._stop_event:
             self._stop_event.set()
+
+    def request_force_disconnect(self) -> None:
+        """Trigger a deliberate drop for demo purposes."""
+        self._force_drop.set()
+
+    def is_running(self) -> bool:
+        return self._running and self._stop_event is not None and not self._stop_event.is_set()
 
     async def _connected_loop(
         self,
@@ -137,6 +155,13 @@ class Reconnector:
             while not stop_event.is_set():
                 if deadline and monotonic() >= deadline:
                     break
+                if self._force_drop.is_set():
+                    self._force_drop.clear()
+                    await self._log("session_forced_disconnect", status="pending")
+                    with contextlib.suppress(Exception):
+                        await session.disconnect()
+                    await self._log("session_forced_disconnect", status="ok")
+                    break
                 try:
                     rssi = await session.read_rssi()
                     status = "ok" if rssi is not None else "unknown"
@@ -147,6 +172,8 @@ class Reconnector:
                     break
                 except Exception as exc:  # pragma: no cover - hardware dependent
                     await self._log("rssi_sample", status="error", message=str(exc))
+                    await self._log("session_lost", status="error", message=str(exc))
+                    break
 
                 await self._sleep_with_stop(self.poll_interval, stop_event, deadline)
         finally:

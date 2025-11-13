@@ -1,505 +1,376 @@
-"""Flask-based Web UI for TruTooth.
+"""Flask host for the TruTooth React UI and API proxy."""
 
-Integrated from fork: Provides a human-friendly web interface for viewing
-connected devices and connection history. Complements the FastAPI REST API
-by offering a browser-based monitoring dashboard.
-
-Usage:
-    python -m trutooth.web_ui
-"""
 from __future__ import annotations
 
-import asyncio
+import json
 import logging
+import os
 import threading
-import time
 import webbrowser
-from typing import Optional
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional
 
-from flask import Flask, jsonify, render_template_string
+import requests
+from flask import Flask, jsonify, redirect, request, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
+from requests import RequestException
+from sqlalchemy.exc import SQLAlchemyError
 
-from trutooth.models.db_models import init_db_models
-from trutooth.models.notification_system import NotificationSystem
 
-logger = logging.getLogger(__name__)
+APP_DIR = Path(__file__).resolve().parent
+REPO_ROOT = APP_DIR.parent
+FRONTEND_DIST = REPO_ROOT / "ui" / "dist"
+INSTANCE_DIR = APP_DIR / "instance"
+DATABASE_PATH = INSTANCE_DIR / "ui.sqlite3"
 
-# ---------------------------------------------------------------
-# FLASK APP SETUP
-# ---------------------------------------------------------------
-app = Flask(__name__)
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///trutooth_web.db"
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+INSTANCE_DIR.mkdir(parents=True, exist_ok=True)
+
+DEFAULT_API_BASE = os.getenv("TRUTOOTH_DEFAULT_API_BASE", "http://127.0.0.1:8000")
+DEFAULT_SCAN_TIMEOUT = float(os.getenv("TRUTOOTH_DEFAULT_SCAN_TIMEOUT", "6.0"))
+MAX_HISTORY_RECORDS = int(os.getenv("TRUTOOTH_UI_HISTORY_LIMIT", "500"))
+
+
+app = Flask(
+    __name__,
+    static_folder=str(FRONTEND_DIST / "assets"),
+    static_url_path="/assets",
+)
+app.config.update(
+    SQLALCHEMY_DATABASE_URI=f"sqlite:///{DATABASE_PATH}",
+    SQLALCHEMY_TRACK_MODIFICATIONS=False,
+)
+
 db = SQLAlchemy(app)
-
-# Initialize database models
-BluetoothDeviceDB, ConnectionRecordDB = init_db_models(db)
+logger = logging.getLogger("trutooth.web_ui")
 
 
-# ---------------------------------------------------------------
-# BLUETOOTH MONITOR INTEGRATION
-# ---------------------------------------------------------------
-class BluetoothWebMonitor:
-    """Monitor that integrates scanning with database updates."""
-    
-    def __init__(self, app: Flask, scan_interval: float = 10.0):
-        self.app = app
-        self.scan_interval = scan_interval
-        self.is_monitoring = False
-        self.thread: Optional[threading.Thread] = None
-        self.notifications = NotificationSystem()
-    
-    def start_monitoring(self) -> None:
-        """Start background monitoring thread."""
-        if self.is_monitoring:
-            logger.warning("Monitor already running")
-            return
-        self.is_monitoring = True
-        self.thread = threading.Thread(target=self.monitor_loop, daemon=True)
-        self.thread.start()
-        logger.info("BluetoothWebMonitor started scanning...")
-    
-    def stop_monitoring(self) -> None:
-        """Stop background monitoring."""
-        self.is_monitoring = False
-        logger.info("BluetoothWebMonitor stopped")
-    
-    def monitor_loop(self) -> None:
-        """Main monitoring loop - scans and updates database."""
-        while self.is_monitoring:
-            try:
-                asyncio.run(self.scan_and_update())
-            except Exception as exc:
-                logger.exception("Error during scan: %s", exc)
-            time.sleep(self.scan_interval)
-    
-    async def scan_and_update(self) -> None:
-        """Scan for devices and update database.
-        
-        Integrates with trutooth.scanner or falls back to direct bleak scanning.
-        """
+def _utc_now() -> datetime:
+    return datetime.utcnow()
+
+
+class DeviceSnapshot(db.Model):  # type: ignore[misc]
+    __tablename__ = "ui_device_snapshots"
+
+    id = db.Column(db.Integer, primary_key=True)
+    address = db.Column(db.String(120), unique=True, nullable=False)
+    name = db.Column(db.String(255))
+    rssi = db.Column(db.Integer)
+    connectable = db.Column(db.Boolean, default=True)
+    last_seen = db.Column(db.DateTime, default=_utc_now, nullable=False)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "address": self.address,
+            "name": self.name or "",
+            "rssi": self.rssi,
+            "connectable": bool(self.connectable),
+            "lastSeen": self.last_seen.isoformat() + "Z" if self.last_seen else None,
+        }
+
+
+class HistoryRecord(db.Model):  # type: ignore[misc]
+    __tablename__ = "ui_history_records"
+
+    id = db.Column(db.Integer, primary_key=True)
+    timestamp = db.Column(db.DateTime, default=_utc_now, nullable=False)
+    address = db.Column(db.String(120))
+    device = db.Column(db.String(255))
+    status = db.Column(db.String(120))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "timestamp": self.timestamp.isoformat() + "Z" if self.timestamp else None,
+            "address": self.address,
+            "device": self.device,
+            "status": self.status,
+        }
+
+
+def _frontend_ready() -> bool:
+    return (FRONTEND_DIST / "index.html").exists()
+
+
+def _missing_frontend_response():
+    message = {
+        "ok": False,
+        "error": "React build not found",
+        "hint": "Run npm install && npm run build inside ui/.",
+    }
+    return jsonify(message), 503
+
+
+def _normalize_base_url(base_url: Optional[str]) -> str:
+    candidate = (base_url or "").strip()
+    if not candidate:
+        return DEFAULT_API_BASE.rstrip("/")
+    return candidate.rstrip("/")
+
+
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _proxy_request(
+    method: str,
+    base_url: str,
+    path: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    timeout: float = 15.0,
+) -> Any:
+    url = f"{base_url}{path}"
+    response = requests.request(method, url, params=params, timeout=timeout)
+    response.raise_for_status()
+    try:
+        return response.json()
+    except ValueError:
+        if response.text:
+            return json.loads(response.text)
+        return None
+
+
+def _store_devices(devices: Iterable[Dict[str, Any]]) -> None:
+    updated = 0
+    for payload in devices:
+        address = (payload.get("address") or "").strip()
+        if not address:
+            continue
+        record = DeviceSnapshot.query.filter_by(address=address).one_or_none()
+        if record is None:
+            record = DeviceSnapshot(address=address)
+            db.session.add(record)
+        record.name = (payload.get("name") or "").strip() or None
+        rssi_value = payload.get("rssi")
         try:
-            from bleak import BleakScanner
-            devices = await BleakScanner.discover(timeout=5.0)
-        except Exception as exc:
-            logger.error("Scan failed: %s", exc)
-            return
-        
-        found_addresses = {d.address for d in devices}
-        
-        with self.app.app_context():
-            # Add/update found devices
-            for device in devices:
-                name = device.name or "Unknown"
-                address = device.address
-                
-                existing = BluetoothDeviceDB.query.filter_by(
-                    device_address=address
-                ).first()
-                
-                if not existing:
-                    # New device
-                    new_dev = BluetoothDeviceDB(
-                        device_name=name,
-                        device_address=address,
-                        connection_status=True
-                    )
-                    db.session.add(new_dev)
-                    db.session.commit()
-                    
-                    # Record connection
-                    record = ConnectionRecordDB(
-                        device_id=new_dev.id,
-                        status="Connected"
-                    )
-                    db.session.add(record)
-                    db.session.commit()
-                    
-                    # Notify
-                    class DeviceStub:
-                        def __init__(self, name, addr):
-                            self.device_name = name
-                            self.device_address = addr
-                    self.notifications.notify_presence(DeviceStub(name, address))
-                
-                elif not existing.connection_status:
-                    # Reconnected device
-                    existing.connect()
-                    db.session.commit()
-                    
-                    record = ConnectionRecordDB(
-                        device_id=existing.id,
-                        status="Connected"
-                    )
-                    db.session.add(record)
-                    db.session.commit()
-                    
-                    class DeviceStub:
-                        def __init__(self, name, addr):
-                            self.device_name = name
-                            self.device_address = addr
-                    self.notifications.notify_presence(DeviceStub(existing.device_name, address))
-            
-            # Mark disconnected devices
-            all_devices = BluetoothDeviceDB.query.all()
-            for dev in all_devices:
-                if dev.device_address not in found_addresses and dev.connection_status:
-                    dev.disconnect()
-                    db.session.commit()
-                    
-                    record = ConnectionRecordDB(
-                        device_id=dev.id,
-                        status="Disconnected"
-                    )
-                    db.session.add(record)
-                    db.session.commit()
-                    
-                    class DeviceStub:
-                        def __init__(self, name, addr):
-                            self.device_name = name
-                            self.device_address = addr
-                    self.notifications.notify_disconnection(
-                        DeviceStub(dev.device_name, dev.device_address)
-                    )
+            record.rssi = int(rssi_value) if rssi_value is not None else None
+        except (TypeError, ValueError):
+            record.rssi = None
+        connectable = payload.get("connectable")
+        if connectable is not None:
+            record.connectable = bool(connectable)
+        record.last_seen = _utc_now()
+        updated += 1
+    if updated:
+        try:
+            db.session.commit()
+        except SQLAlchemyError:
+            db.session.rollback()
+            logger.exception("Failed to persist device snapshots")
 
 
-# Global monitor instance
-monitor = BluetoothWebMonitor(app, scan_interval=10)
-
-
-# ---------------------------------------------------------------
-# ROUTES
-# ---------------------------------------------------------------
-@app.route("/")
-def index():
-    """Main device listing page."""
-    devices = BluetoothDeviceDB.query.all()
-    return render_template_string(TEMPLATE_INDEX, devices=devices)
-
-
-@app.route("/history")
-def history():
-    """Connection history page."""
-    records = (
-        ConnectionRecordDB.query
-        .order_by(ConnectionRecordDB.timestamp.desc())
-        .limit(100)
+def _snapshot_devices(limit: int = 200) -> List[Dict[str, Any]]:
+    rows = (
+        DeviceSnapshot.query.order_by(DeviceSnapshot.last_seen.desc())
+        .limit(limit)
         .all()
     )
-    return render_template_string(TEMPLATE_HISTORY, records=records)
+    return [row.to_dict() for row in rows]
 
 
-@app.route("/api/devices")
+def _append_history(address: Optional[str], device: Optional[str], status: str) -> None:
+    entry = HistoryRecord(
+        address=(address or "").strip() or None,
+        device=(device or "").strip() or None,
+        status=status,
+    )
+    db.session.add(entry)
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        logger.exception("Failed to persist history entry")
+        return
+    _prune_history()
+
+
+def _prune_history() -> None:
+    total = HistoryRecord.query.count()
+    if total <= MAX_HISTORY_RECORDS:
+        return
+    excess = total - MAX_HISTORY_RECORDS
+    rows = (
+        HistoryRecord.query.order_by(HistoryRecord.timestamp.asc())
+        .limit(excess)
+        .all()
+    )
+    for row in rows:
+        db.session.delete(row)
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        logger.exception("Failed to prune history entries")
+
+
+def _snapshot_history(limit: int = 200) -> List[Dict[str, Any]]:
+    rows = (
+        HistoryRecord.query.order_by(HistoryRecord.timestamp.desc())
+        .limit(limit)
+        .all()
+    )
+    return [row.to_dict() for row in rows]
+
+
+@app.get("/api/health")
+def api_health():
+    return jsonify({"status": "ok", "time": _utc_now().isoformat() + "Z"})
+
+
+@app.get("/api/devices")
 def api_devices():
-    """JSON API endpoint for devices."""
-    devices = BluetoothDeviceDB.query.all()
-    return jsonify([d.to_dict() for d in devices])
+    return jsonify(_snapshot_devices())
 
 
-@app.route("/api/history")
-def api_history():
-    """JSON API endpoint for connection history."""
-    records = (
-        ConnectionRecordDB.query
-        .order_by(ConnectionRecordDB.timestamp.desc())
-        .limit(100)
-        .all()
-    )
-    return jsonify([r.to_dict() for r in records])
+@app.post("/ui/scan")
+def ui_scan():
+    payload = request.get_json(silent=True) or {}
+    base_url = _normalize_base_url(payload.get("baseUrl"))
+    timeout = _safe_float(payload.get("timeout"), DEFAULT_SCAN_TIMEOUT)
+    params = {"timeout": timeout}
+    try:
+        result = _proxy_request(
+            "GET",
+            base_url,
+            "/scan",
+            params=params,
+            timeout=max(timeout + 5.0, 10.0),
+        )
+    except RequestException as exc:
+        logger.warning("Scan proxy failed: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("Scan proxy failed unexpectedly")
+        return jsonify({"ok": False, "error": str(exc)}), 502
+
+    devices: List[Dict[str, Any]] = []
+    if isinstance(result, list):
+        for item in result:
+            if not isinstance(item, dict):
+                continue
+            devices.append(
+                {
+                    "address": item.get("address"),
+                    "name": item.get("name"),
+                    "rssi": item.get("rssi"),
+                    "connectable": item.get("connectable", True),
+                }
+            )
+
+    _store_devices(devices)
+    return jsonify({"ok": True, "devices": devices, "history": _snapshot_history()})
 
 
-@app.route("/monitor/start", methods=["POST"])
-def start_monitor():
-    """Start monitoring."""
-    monitor.start_monitoring()
-    return jsonify({"status": "started"})
+@app.post("/ui/monitor/start")
+def ui_monitor_start():
+    payload = request.get_json(silent=True) or {}
+    base_url = _normalize_base_url(payload.pop("baseUrl", None))
+    params = {k: v for k, v in payload.items() if v not in (None, "", [])}
+    try:
+        result = _proxy_request(
+            "POST",
+            base_url,
+            "/monitor/start",
+            params=params,
+            timeout=30.0,
+        )
+    except RequestException as exc:
+        logger.warning("Monitor start failed: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("Monitor start failed unexpectedly")
+        return jsonify({"ok": False, "error": str(exc)}), 502
+
+    address = params.get("device")
+    device_name = address
+    if isinstance(result, dict):
+        device_name = result.get("device") or device_name
+    if address or device_name:
+        _append_history(address=address, device=device_name, status="monitor-started")
+    return jsonify({"ok": True, "result": result})
 
 
-@app.route("/monitor/stop", methods=["POST"])
-def stop_monitor():
-    """Stop monitoring."""
-    monitor.stop_monitoring()
-    return jsonify({"status": "stopped"})
+@app.post("/ui/monitor/stop")
+def ui_monitor_stop():
+    payload = request.get_json(silent=True) or {}
+    base_url = _normalize_base_url(payload.get("baseUrl"))
+    try:
+        result = _proxy_request(
+            "POST",
+            base_url,
+            "/monitor/stop",
+            timeout=15.0,
+        )
+    except RequestException as exc:
+        logger.warning("Monitor stop failed: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("Monitor stop failed unexpectedly")
+        return jsonify({"ok": False, "error": str(exc)}), 502
+
+    _append_history(address=None, device=None, status="monitor-stopped")
+    return jsonify({"ok": True, "result": result})
 
 
-# ---------------------------------------------------------------
-# HTML TEMPLATES (from fork)
-# ---------------------------------------------------------------
-TEMPLATE_INDEX = """
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TruTooth - Bluetooth Monitor</title>
-  <style>
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      min-height: 100vh;
-      padding: 20px;
-    }
-    .container {
-      max-width: 1200px;
-      margin: 0 auto;
-      background: white;
-      border-radius: 12px;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-      padding: 30px;
-    }
-    h1 {
-      color: #333;
-      margin-bottom: 10px;
-      font-size: 2rem;
-    }
-    .subtitle {
-      color: #666;
-      margin-bottom: 20px;
-      font-size: 1rem;
-    }
-    nav {
-      margin-bottom: 20px;
-    }
-    nav a {
-      color: #667eea;
-      text-decoration: none;
-      font-weight: 500;
-      padding: 8px 16px;
-      border-radius: 6px;
-      background: #f0f0f0;
-      transition: background 0.3s;
-    }
-    nav a:hover {
-      background: #e0e0e0;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 20px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    }
-    th, td {
-      padding: 14px;
-      text-align: left;
-      border-bottom: 1px solid #e0e0e0;
-    }
-    th {
-      background: #667eea;
-      color: white;
-      font-weight: 600;
-      text-transform: uppercase;
-      font-size: 0.85rem;
-      letter-spacing: 0.5px;
-    }
-    tr:hover {
-      background: #f9f9f9;
-    }
-    .status {
-      display: inline-block;
-      padding: 4px 12px;
-      border-radius: 12px;
-      font-size: 0.85rem;
-      font-weight: 600;
-    }
-    .status-connected {
-      background: #10b981;
-      color: white;
-    }
-    .status-disconnected {
-      background: #ef4444;
-      color: white;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>🦷 TruTooth Monitor</h1>
-    <p class="subtitle">Real-time Bluetooth device monitoring dashboard</p>
-    <nav>
-      <a href="/history">📊 View Connection History</a>
-    </nav>
-    <table>
-      <thead>
-        <tr>
-          <th>Device Name</th>
-          <th>MAC Address</th>
-          <th>Status</th>
-        </tr>
-      </thead>
-      <tbody>
-      {% for d in devices %}
-        <tr>
-          <td><strong>{{ d.device_name }}</strong></td>
-          <td><code>{{ d.device_address }}</code></td>
-          <td>
-            <span class="status {% if d.connection_status %}status-connected{% else %}status-disconnected{% endif %}">
-              {{ "Connected" if d.connection_status else "Disconnected" }}
-            </span>
-          </td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</body>
-</html>
-"""
-
-TEMPLATE_HISTORY = """
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TruTooth - Connection History</title>
-  <style>
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      min-height: 100vh;
-      padding: 20px;
-    }
-    .container {
-      max-width: 1200px;
-      margin: 0 auto;
-      background: white;
-      border-radius: 12px;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-      padding: 30px;
-    }
-    h1 {
-      color: #333;
-      margin-bottom: 10px;
-      font-size: 2rem;
-    }
-    .subtitle {
-      color: #666;
-      margin-bottom: 20px;
-      font-size: 1rem;
-    }
-    nav {
-      margin-bottom: 20px;
-    }
-    nav a {
-      color: #667eea;
-      text-decoration: none;
-      font-weight: 500;
-      padding: 8px 16px;
-      border-radius: 6px;
-      background: #f0f0f0;
-      transition: background 0.3s;
-    }
-    nav a:hover {
-      background: #e0e0e0;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 20px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    }
-    th, td {
-      padding: 14px;
-      text-align: left;
-      border-bottom: 1px solid #e0e0e0;
-    }
-    th {
-      background: #764ba2;
-      color: white;
-      font-weight: 600;
-      text-transform: uppercase;
-      font-size: 0.85rem;
-      letter-spacing: 0.5px;
-    }
-    tr:hover {
-      background: #f9f9f9;
-    }
-    .status-badge {
-      display: inline-block;
-      padding: 4px 12px;
-      border-radius: 12px;
-      font-size: 0.85rem;
-      font-weight: 600;
-    }
-    .status-connected {
-      background: #10b981;
-      color: white;
-    }
-    .status-disconnected {
-      background: #ef4444;
-      color: white;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>📊 Connection History</h1>
-    <p class="subtitle">Historical record of device connections</p>
-    <nav>
-      <a href="/">← Back to Devices</a>
-    </nav>
-    <table>
-      <thead>
-        <tr>
-          <th>Timestamp</th>
-          <th>Device</th>
-          <th>Status</th>
-        </tr>
-      </thead>
-      <tbody>
-      {% for r in records %}
-        <tr>
-          <td>{{ r.timestamp }}</td>
-          <td><strong>{{ r.device.device_name if r.device else "Unknown" }}</strong></td>
-          <td>
-            <span class="status-badge {% if r.status == 'Connected' %}status-connected{% else %}status-disconnected{% endif %}">
-              {{ r.status }}
-            </span>
-          </td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</body>
-</html>
-"""
+@app.get("/ui/monitor/status")
+def ui_monitor_status():
+    base_url = _normalize_base_url(request.args.get("baseUrl"))
+    try:
+        result = _proxy_request(
+            "GET",
+            base_url,
+            "/monitor/status",
+            timeout=15.0,
+        )
+    except RequestException as exc:
+        logger.warning("Monitor status failed: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("Monitor status failed unexpectedly")
+        return jsonify({"ok": False, "error": str(exc)}), 502
+    return jsonify({"ok": True, "result": result})
 
 
-# ---------------------------------------------------------------
-# INITIALIZATION
-# ---------------------------------------------------------------
-def init_db():
-    """Initialize database and start monitoring."""
+@app.get("/ui/history")
+def ui_history():
+    return jsonify({"ok": True, "records": _snapshot_history()})
+
+
+@app.route("/", methods=["GET"])
+def root_redirect():
+    return redirect("/ui", code=307)
+
+
+@app.route("/ui", defaults={"path": ""})
+@app.route("/ui/<path:path>")
+def ui_app(path: str):
+    if not _frontend_ready():
+        return _missing_frontend_response()
+    target = FRONTEND_DIST / path
+    if path and target.is_file():
+        return send_from_directory(FRONTEND_DIST, path)
+    return send_from_directory(FRONTEND_DIST, "index.html")
+
+
+def init_db() -> None:
     with app.app_context():
         db.create_all()
-        if not monitor.is_monitoring:
-            monitor.start_monitoring()
 
 
-# ---------------------------------------------------------------
-# MAIN ENTRY POINT
-# ---------------------------------------------------------------
-def main():
-    """Run the Flask web UI."""
-    # Initialize DB and start scanning
+try:
     init_db()
-    
-    # Open web browser automatically
+except Exception:  # pragma: no cover - defensive bootstrap
+    logger.exception("Database bootstrap failed during module import")
+
+
+def main() -> None:
+    init_db()
     url = "http://127.0.0.1:5000"
     threading.Timer(1.5, lambda: webbrowser.open(url)).start()
-    
-    # Start Flask server
     app.run(debug=False, host="127.0.0.1", port=5000, use_reloader=False)
 
 

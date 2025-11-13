@@ -13,6 +13,7 @@ The fork (KenQ22/Trutooth) contained a simpler Flask-based monolithic applicatio
 ## Changes Integrated
 
 ### 1. Flask Web UI (`trutooth/web_ui.py`)
+
 **Status:** ✅ Added
 
 - Created a new Flask-based web interface as an alternative to the Java GUI
@@ -25,11 +26,13 @@ The fork (KenQ22/Trutooth) contained a simpler Flask-based monolithic applicatio
   - Background scanning thread using bleak
 
 **Key Benefits:**
+
 - No Java installation required for web-based monitoring
 - Accessible from any device with a browser
 - Complements the existing FastAPI REST API
 
 ### 2. SQLAlchemy Database Support (`trutooth/models/db_models.py`)
+
 **Status:** ✅ Added
 
 - Added optional database persistence layer using Flask-SQLAlchemy
@@ -40,17 +43,21 @@ The fork (KenQ22/Trutooth) contained a simpler Flask-based monolithic applicatio
 - Provides better querying and historical analysis capabilities
 
 ### 3. Enhanced Notification System
+
 **Status:** ✅ Updated (`trutooth/models/notification_system.py`)
 
 Added new notification methods from fork:
+
 - `notify_presence()`: Dedicated method for device connection notifications
 - `notify_disconnection()`: Dedicated method for device disconnection notifications
 - Enhanced logging output with visual indicators ([+] for connections, [-] for disconnections)
 
 ### 4. Updated Dependencies
+
 **Status:** ✅ Updated (`requirements.txt`)
 
 Added optional Flask dependencies:
+
 ```
 flask>=3.0
 flask-sqlalchemy>=3.1
@@ -58,9 +65,11 @@ sqlalchemy>=2.0
 ```
 
 ### 5. Updated .gitignore
+
 **Status:** ✅ Updated
 
 Added database file patterns:
+
 ```
 *.db
 *.sqlite
@@ -71,14 +80,17 @@ Added database file patterns:
 ```
 
 ### 6. Unified Launcher Script
+
 **Status:** ✅ Created (`launch_trutooth.py`)
 
 Created a flexible launcher that supports:
+
 - `--mode api`: Launch FastAPI REST API only (port 8000)
 - `--mode web`: Launch Flask Web UI only (port 5000)
 - `--mode both`: Run both interfaces simultaneously
 
 **Usage Examples:**
+
 ```powershell
 # Launch web interface (default)
 python launch_trutooth.py
@@ -97,7 +109,9 @@ python launch_trutooth.py --mode both
 After reviewing both frontend and backend layers:
 
 **Frontend Layers:**
+
 1. **Flask Web UI** (`trutooth/web_ui.py`) - NEW
+
    - Browser-based HTML interface
    - Integrated database storage
    - Background scanning
@@ -108,6 +122,7 @@ After reviewing both frontend and backend layers:
    - Rich GUI controls
 
 **Backend Layer:**
+
 - **FastAPI REST API** (`trutooth/api.py`)
   - Programmatic REST endpoints
   - WebSocket event streaming
@@ -115,6 +130,7 @@ After reviewing both frontend and backend layers:
   - Used by Java GUI
 
 **Conclusion:** The three interfaces serve different use cases without duplication:
+
 - Flask Web UI: Lightweight browser-based monitoring (self-contained)
 - Java GUI: Rich desktop application (connects to FastAPI)
 - FastAPI: Programmatic access and Java GUI backend
@@ -132,29 +148,35 @@ This will install Flask, SQLAlchemy, and other new dependencies.
 ### Launch Options
 
 #### Option 1: Flask Web UI (New from fork)
+
 ```powershell
 python launch_trutooth.py --mode web
 # or
 python -m trutooth.web_ui
 ```
+
 Access at: http://127.0.0.1:5000
 
 #### Option 2: FastAPI REST API (Existing)
+
 ```powershell
 python launch_trutooth.py --mode api
 # or
 uvicorn trutooth.api:app --reload
 ```
+
 Access at: http://127.0.0.1:8000
 API Docs: http://127.0.0.1:8000/docs
 
 #### Option 3: Java GUI (Existing)
+
 ```powershell
 cd java
 mvn clean compile exec:java
 ```
 
 #### Option 4: Run Both Flask + FastAPI
+
 ```powershell
 python launch_trutooth.py --mode both
 ```
@@ -170,16 +192,19 @@ python launch_trutooth.py --mode both
 ## Technical Notes
 
 ### Database Location
+
 - Flask Web UI creates: `trutooth_web.db` in the root directory
 - Automatically created on first launch
 - SQLite format for easy portability
 
 ### Port Usage
+
 - FastAPI: 8000
 - Flask Web UI: 5000
 - Can run both simultaneously without conflicts
 
 ### Scanning Implementation
+
 Both Flask and FastAPI use the same underlying `bleak` scanner, ensuring consistent behavior.
 
 ## Next Steps
@@ -204,6 +229,7 @@ Both Flask and FastAPI use the same underlying `bleak` scanner, ensuring consist
 ## Commit Messages
 
 This integration will be committed with:
+
 ```
 Integrate KenQ22/Trutooth fork changes
 

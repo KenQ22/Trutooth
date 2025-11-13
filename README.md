@@ -97,7 +97,7 @@ Run tests from the repository root after installing backend dependencies.
 
 The new browser-based interface includes:
 - **Real-time device listing** with connection status
-- **Connection history viewer** with timestamps  
+- **Connection history viewer** with timestamps
 - **Modern responsive design** with gradient styling
 - **Automatic background scanning** using bleak
 - **SQLite database storage** for historical analysis
@@ -107,3 +107,4 @@ Access at `http://127.0.0.1:5000` after launching with `python launch_trutooth.p
 ## Integration Notes
 
 See [INTEGRATION_SUMMARY.md](INTEGRATION_SUMMARY.md) for details about the recent fork integration that added the Flask Web UI and database support.
+````

@@ -5,61 +5,43 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "FastAPI Backend",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "uvicorn",
-            "args": [
-                "trutooth.api:app",
-                "--reload",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "8000"
-            ],
-            "jinja": true,
-            "justMyCode": false
-        },
-        {
-            "name": "Flask Web UI",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "trutooth.web_ui",
-            "jinja": true,
-            "console": "integratedTerminal",
-            "justMyCode": false
-        },
-        {
-            "name": "TruTooth (Both: API+Web)",
+            "name": "TruTooth API (Reload)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/launch_trutooth.py",
-            "args": ["--mode", "both"],
+            "args": [
+                "--mode",
+                "api",
+                "--reload"
+            ],
             "console": "integratedTerminal",
             "justMyCode": false
         },
         {
-            "name": "TruTooth Java",
-            "type": "java",
+            "name": "TruTooth Web UI",
+            "type": "debugpy",
             "request": "launch",
-            "mainClass": "com.trutooth.gui.TruToothGuiApp",
-            "projectName": "trutooth-app"
-        }
-    ],
-    "compounds": [
-        {
-            "name": "Launch Full Application (API + Java)",
-            "configurations": [
-                "FastAPI Backend",
-                "TruTooth Java"
-            ]
+            "program": "${workspaceFolder}/launch_trutooth.py",
+            "args": [
+                "--mode",
+                "web"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false
         },
         {
-            "name": "Launch Full Application (Web + Java)",
-            "configurations": [
-                "Flask Web UI",
-                "TruTooth Java"
-            ]
+            "name": "TruTooth API + Web",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/launch_trutooth.py",
+            "args": [
+                "--mode",
+                "both",
+                "--reload"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false
         }
-    ]
+    ],
+    "compounds": []
 }

@@ -58,11 +58,13 @@ def check_dependencies():
     return flask_available, fastapi_available
 
 
-def launch_fastapi():
+def launch_fastapi(reload: bool = False):
     """Launch FastAPI server."""
     print("🚀 Starting FastAPI REST API on http://127.0.0.1:8000")
     print("📖 API docs available at http://127.0.0.1:8000/docs")
-    _run_fastapi(reload=True)
+    if reload:
+        print("🔁 Auto-reload enabled")
+    _run_fastapi(reload=reload)
 
 
 def launch_flask():
@@ -71,42 +73,53 @@ def launch_flask():
     _run_flask()
 
 
-def launch_both():
-    """Launch both FastAPI and Flask in separate processes."""
+def launch_both(reload_api: bool = False):
+    """Launch both FastAPI and Flask using separate subprocesses."""
     print("🚀 Starting both interfaces...")
     print("   - FastAPI REST API: http://127.0.0.1:8000")
     print("   - Flask Web UI:     http://127.0.0.1:5000")
     print("\nPress Ctrl+C to stop both servers\n")
-    
-    import multiprocessing
 
-    # Start FastAPI in separate process
-    api_process = multiprocessing.Process(target=_run_fastapi, kwargs={"reload": False})
-
-    # Start Flask in separate process
-    web_process = multiprocessing.Process(target=_run_flask)
-
+    processes = []
     try:
-        api_process.start()
-        time.sleep(1)  # Give API time to start
-        web_process.start()
-        
-        # Wait for both processes
-        api_process.join()
-        web_process.join()
+        api_cmd = [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "trutooth.api:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8000",
+        ]
+        if reload_api:
+            api_cmd.append("--reload")
+        processes.append(("FastAPI", subprocess.Popen(api_cmd)))
+
+        time.sleep(1)
+        web_cmd = [sys.executable, "-m", "trutooth.web_ui"]
+        processes.append(("Flask", subprocess.Popen(web_cmd)))
+
+        while True:
+            time.sleep(0.5)
+            for name, proc in processes:
+                exit_code = proc.poll()
+                if exit_code is not None:
+                    print(f"\n{name} exited with code {exit_code}")
+                    return
     except KeyboardInterrupt:
         print("\n\n⏹️  Shutting down servers...")
-        api_process.terminate()
-        web_process.terminate()
-        api_process.join()
-        web_process.join()
-        print("✅ Servers stopped")
     finally:
-        # Ensure child processes are stopped if parent exits unexpectedly.
-        for proc in (api_process, web_process):
-            if proc.is_alive():
+        for name, proc in processes:
+            if proc.poll() is None:
                 proc.terminate()
-                proc.join()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+        if processes:
+            print("✅ Servers stopped")
 
 
 def main():
@@ -118,6 +131,11 @@ def main():
         choices=["api", "web", "both"],
         default="web",
         help="Which interface to launch (default: web)"
+    )
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Enable auto-reload for the FastAPI server"
     )
     
     args = parser.parse_args()
@@ -137,11 +155,11 @@ def main():
     
     # Launch appropriate interface
     if args.mode == "api":
-        launch_fastapi()
+        launch_fastapi(reload=args.reload)
     elif args.mode == "web":
         launch_flask()
     elif args.mode == "both":
-        launch_both()
+        launch_both(reload_api=args.reload)
 
 
 if __name__ == "__main__":

@@ -142,7 +142,8 @@ def _store_devices(devices: Iterable[Dict[str, Any]]) -> None:
             continue
         record = DeviceSnapshot.query.filter_by(address=address).one_or_none()
         if record is None:
-            record = DeviceSnapshot(address=address)
+            record = DeviceSnapshot()
+            record.address = address
             db.session.add(record)
         record.name = (payload.get("name") or "").strip() or None
         rssi_value = payload.get("rssi")
@@ -173,11 +174,10 @@ def _snapshot_devices(limit: int = 200) -> List[Dict[str, Any]]:
 
 
 def _append_history(address: Optional[str], device: Optional[str], status: str) -> None:
-    entry = HistoryRecord(
-        address=(address or "").strip() or None,
-        device=(device or "").strip() or None,
-        status=status,
-    )
+    entry = HistoryRecord()
+    entry.address = (address or "").strip() or None
+    entry.device = (device or "").strip() or None
+    entry.status = status
     db.session.add(entry)
     try:
         db.session.commit()
